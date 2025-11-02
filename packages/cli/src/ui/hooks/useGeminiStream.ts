@@ -42,6 +42,7 @@ import { type Part, type PartListUnion, FinishReason } from '@google/genai';
 import type {
   HistoryItem,
   HistoryItemWithoutId,
+  HistoryItemThinking,
   HistoryItemToolGroup,
   SlashCommandProcessorResult,
 } from '../types.js';
@@ -726,6 +727,14 @@ export const useGeminiStream = (
         switch (event.type) {
           case ServerGeminiEventType.Thought:
             setThought(event.value);
+            // Add thinking event to history for display
+            addItem(
+              {
+                type: 'thinking',
+                thought: event.value,
+              } as HistoryItemThinking,
+              userMessageTimestamp,
+            );
             break;
           case ServerGeminiEventType.Content:
             geminiMessageBuffer = handleContentEvent(
@@ -790,6 +799,7 @@ export const useGeminiStream = (
       return StreamProcessingStatus.Completed;
     },
     [
+      addItem,
       handleContentEvent,
       handleUserCancelledEvent,
       handleErrorEvent,
