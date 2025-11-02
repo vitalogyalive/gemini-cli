@@ -649,7 +649,7 @@ export async function loadCliConfig(
     loadMemoryFromIncludeDirectories:
       settings.context?.loadMemoryFromIncludeDirectories || false,
     debugMode,
-    verboseLogging: argv.verbose ?? false,
+    verboseLogging: argv.verbose ?? process.env['GEMINI_VERBOSE'] === 'true',
     question,
 
     coreTools: settings.tools?.core || undefined,
