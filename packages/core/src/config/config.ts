@@ -215,6 +215,7 @@ export interface ConfigParameters {
   sandbox?: SandboxConfig;
   targetDir: string;
   debugMode: boolean;
+  verboseLogging?: boolean;
   question?: string;
 
   coreTools?: string[];
@@ -301,6 +302,7 @@ export class Config {
   private readonly targetDir: string;
   private workspaceContext: WorkspaceContext;
   private readonly debugMode: boolean;
+  private readonly verboseLogging: boolean;
   private readonly question: string | undefined;
 
   private readonly coreTools: string[] | undefined;
@@ -401,6 +403,7 @@ export class Config {
       params.includeDirectories ?? [],
     );
     this.debugMode = params.debugMode;
+    this.verboseLogging = params.verboseLogging ?? false;
     this.question = params.question;
 
     this.coreTools = params.coreTools;
@@ -712,6 +715,11 @@ export class Config {
   getDebugMode(): boolean {
     return this.debugMode;
   }
+
+  getVerboseLogging(): boolean {
+    return this.verboseLogging;
+  }
+
   getQuestion(): string | undefined {
     return this.question;
   }

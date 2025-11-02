@@ -33,6 +33,7 @@ import { CodeAssistServer } from '../code_assist/server.js';
 import { toContents } from '../code_assist/converter.js';
 import { isStructuredError } from '../utils/quotaErrorDetection.js';
 import { runInDevTraceSpan, type SpanMetadata } from '../telemetry/trace.js';
+import { RealtimeCliLogger } from '../services/realtimeCliLogger.js';
 
 interface StructuredError {
   status: number;
@@ -42,10 +43,15 @@ interface StructuredError {
  * A decorator that wraps a ContentGenerator to add logging to API calls.
  */
 export class LoggingContentGenerator implements ContentGenerator {
+  private readonly realtimeLogger: RealtimeCliLogger;
+
   constructor(
     private readonly wrapped: ContentGenerator,
     private readonly config: Config,
-  ) {}
+  ) {
+    this.realtimeLogger = RealtimeCliLogger.getInstance();
+    this.realtimeLogger.setEnabled(config.getVerboseLogging());
+  }
 
   getWrapped(): ContentGenerator {
     return this.wrapped;
@@ -177,6 +183,7 @@ export class LoggingContentGenerator implements ContentGenerator {
         const startTime = Date.now();
         const contents: Content[] = toContents(req.contents);
         this.logApiRequest(toContents(req.contents), req.model, userPromptId);
+        this.realtimeLogger.logApiCallStart(req.model, userPromptId);
         const serverDetails = this._getEndpointUrl(req, 'generateContent');
         try {
           const response = await this.wrapped.generateContent(
@@ -200,9 +207,16 @@ export class LoggingContentGenerator implements ContentGenerator {
             req.config,
             serverDetails,
           );
+          this.realtimeLogger.logApiCallEnd(
+            response.modelVersion || req.model,
+            durationMs,
+            userPromptId,
+          );
           return response;
         } catch (error) {
           const durationMs = Date.now() - startTime;
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
           this._logApiError(
             durationMs,
             error,
@@ -211,6 +225,12 @@ export class LoggingContentGenerator implements ContentGenerator {
             contents,
             req.config,
             serverDetails,
+          );
+          this.realtimeLogger.logApiCallError(
+            req.model,
+            errorMessage,
+            durationMs,
+            userPromptId,
           );
           throw error;
         }
@@ -231,6 +251,7 @@ export class LoggingContentGenerator implements ContentGenerator {
         spanMetadata.input = { request: req, userPromptId, model: req.model };
         const startTime = Date.now();
         this.logApiRequest(toContents(req.contents), req.model, userPromptId);
+        this.realtimeLogger.logApiCallStart(req.model, userPromptId);
         const serverDetails = this._getEndpointUrl(
           req,
           'generateContentStream',
@@ -241,6 +262,8 @@ export class LoggingContentGenerator implements ContentGenerator {
           stream = await this.wrapped.generateContentStream(req, userPromptId);
         } catch (error) {
           const durationMs = Date.now() - startTime;
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
           this._logApiError(
             durationMs,
             error,
@@ -249,6 +272,12 @@ export class LoggingContentGenerator implements ContentGenerator {
             toContents(req.contents),
             req.config,
             serverDetails,
+          );
+          this.realtimeLogger.logApiCallError(
+            req.model,
+            errorMessage,
+            durationMs,
+            userPromptId,
           );
           throw error;
         }
@@ -300,6 +329,11 @@ export class LoggingContentGenerator implements ContentGenerator {
         req.config,
         serverDetails,
       );
+      this.realtimeLogger.logApiCallEnd(
+        responses[0]?.modelVersion || req.model,
+        durationMs,
+        userPromptId,
+      );
       spanMetadata.output = {
         streamChunks: responses.map((r) => ({
           content: r.candidates?.[0]?.content ?? null,
@@ -310,6 +344,8 @@ export class LoggingContentGenerator implements ContentGenerator {
     } catch (error) {
       spanMetadata.error = error;
       const durationMs = Date.now() - startTime;
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       this._logApiError(
         durationMs,
         error,
@@ -318,6 +354,12 @@ export class LoggingContentGenerator implements ContentGenerator {
         requestContents,
         req.config,
         serverDetails,
+      );
+      this.realtimeLogger.logApiCallError(
+        responses[0]?.modelVersion || req.model,
+        errorMessage,
+        durationMs,
+        userPromptId,
       );
       throw error;
     } finally {

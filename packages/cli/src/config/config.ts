@@ -58,6 +58,7 @@ export interface CliArgs {
   model: string | undefined;
   sandbox: boolean | string | undefined;
   debug: boolean | undefined;
+  verbose: boolean | undefined;
   prompt: string | undefined;
   promptInteractive: string | undefined;
 
@@ -90,6 +91,13 @@ export async function parseArguments(settings: Settings): Promise<CliArgs> {
       alias: 'd',
       type: 'boolean',
       description: 'Run in debug mode?',
+      default: false,
+    })
+    .option('verbose', {
+      alias: 'v',
+      type: 'boolean',
+      description:
+        'Enable verbose logging to see real-time API calls, execution times, and CLI operations',
       default: false,
     })
     .command('$0 [query..]', 'Launch Gemini CLI', (yargsInstance) =>
@@ -642,6 +650,7 @@ export async function loadCliConfig(
     loadMemoryFromIncludeDirectories:
       settings.context?.loadMemoryFromIncludeDirectories || false,
     debugMode,
+    verboseLogging: argv.verbose ?? false,
     question,
 
     coreTools: settings.tools?.core || undefined,
