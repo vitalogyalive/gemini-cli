@@ -179,6 +179,11 @@ export type HistoryItemChatList = HistoryItemBase & {
   chats: ChatDetail[];
 };
 
+export type HistoryItemThinking = HistoryItemBase & {
+  type: 'thinking';
+  thought: ThoughtSummary;
+};
+
 export interface ToolDefinition {
   name: string;
   displayName: string;
@@ -248,7 +253,8 @@ export type HistoryItemWithoutId =
   | HistoryItemExtensionsList
   | HistoryItemToolsList
   | HistoryItemMcpStatus
-  | HistoryItemChatList;
+  | HistoryItemChatList
+  | HistoryItemThinking;
 
 export type HistoryItem = HistoryItemWithoutId & { id: number };
 
