@@ -9,23 +9,20 @@ behind the scenes.
 
 ## Usage
 
-To enable verbose logging, use the `--verbose` or `-v` flag when starting the
-Gemini CLI:
+To enable verbose logging, use the `--verbose` flag when starting the Gemini
+CLI:
 
 ```bash
 gemini --verbose
 ```
 
-Or with the short form:
+**Note**: There is no short alias for verbose (e.g., `-v` is reserved for
+`--version`).
+
+You can combine it with other flags:
 
 ```bash
-gemini -v
-```
-
-You can also combine it with other flags:
-
-```bash
-gemini -v -p "Write a hello world program in Python"
+gemini --verbose -p "Write a hello world program in Python"
 ```
 
 ## What Gets Logged
