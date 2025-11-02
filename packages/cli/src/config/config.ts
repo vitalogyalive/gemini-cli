@@ -94,7 +94,6 @@ export async function parseArguments(settings: Settings): Promise<CliArgs> {
       default: false,
     })
     .option('verbose', {
-      alias: 'v',
       type: 'boolean',
       description:
         'Enable verbose logging to see real-time API calls, execution times, and CLI operations',
