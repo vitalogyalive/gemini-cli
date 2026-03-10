@@ -9,18 +9,49 @@ results — all from your terminal.
 ## Architecture Overview
 
 ```
-┌─────────────┐    MCP Protocol    ┌──────────────────┐
-│  Gemini CLI  │◄─────────────────►│  Jira MCP Server │
-│  (Agent)     │                   │  (stdio/http)     │
-└──────┬───────┘                   └──────────────────┘
-       │
-       │  delegates task
-       ▼
-┌──────────────┐    CDP/MCP     ┌─────────────────────┐
-│ Browser Agent│◄──────────────►│  Chrome (v144+)     │
-│ (subagent)   │                │  + DevTools MCP     │
-└──────────────┘                └─────────────────────┘
+                          ┌─── PowerShell (Windows Host) ───────────────────────┐
+                          │                                                     │
+┌─────────────┐  MCP      │  ┌──────────────────┐                              │
+│  Gemini CLI  │◄─────────┼─►│  Jira MCP Server │                              │
+│  (Agent)     │           │  │  (stdio/http)     │                              │
+└──────┬───────┘           │  └──────────────────┘                              │
+       │                   │                                                     │
+       │  delegates task   │  ┌─────────────────────┐                           │
+       ▼                   │  │  Chrome (v144+)     │                           │
+┌──────────────┐  CDP/MCP  │  │  + DevTools MCP     │                           │
+│ Browser Agent│◄──────────┼─►│  (runs on Windows)  │                           │
+│ (subagent)   │           │  └─────────────────────┘                           │
+└──────────────┘           │                                                     │
+                          └─────────────────────────────────────────────────────┘
+                                          │
+                                          │ Docker TCP (tcp://localhost:2375)
+                                          ▼
+                          ┌─── WSL2 (Linux) ────────────────────────────────────┐
+                          │                                                     │
+                          │  ┌──────────────────────┐                           │
+                          │  │  Docker Engine        │                           │
+                          │  │  ├── WireMock         │ :8081 (mock API)         │
+                          │  │  ├── Frontend App     │ :3000 (dev server)       │
+                          │  │  └── PostgreSQL       │ :5432                    │
+                          │  └──────────────────────┘                           │
+                          │                                                     │
+                          └─────────────────────────────────────────────────────┘
 ```
+
+### Platform Split: PowerShell vs WSL2
+
+| Component | Runs On | Why |
+|:----------|:--------|:----|
+| **Gemini CLI** | PowerShell (Windows) | Browser agent requires native Chrome access |
+| **Browser Agent + Chrome** | PowerShell (Windows) | Chrome must run natively on Windows, not in WSL2 |
+| **Docker Engine** | WSL2 (Linux) | Docker Desktop uses WSL2 backend |
+| **WireMock** | Docker in WSL2 | Mock APIs for frontend dev/testing |
+| **Frontend App** | Docker in WSL2 | Dev server (React, Angular, Vue) |
+| **PostgreSQL** | Docker in WSL2 | Local database |
+
+> **Key constraint:** The browser agent launches Chrome via `chrome-devtools-mcp`.
+> Chrome must run **natively on Windows** — it cannot run inside WSL2 (no display
+> server). Therefore Gemini CLI and the browser agent **must run from PowerShell**.
 
 ---
 
@@ -330,8 +361,83 @@ Add to your `~/.gemini/settings.json`:
 
 ### Prerequisites
 
-- Chrome v144+ installed
-- Node.js with `npx` available
+- Chrome v144+ installed **on Windows** (not in WSL2)
+- Node.js with `npx` available **in PowerShell**
+- Gemini CLI running **from PowerShell** (not from WSL2 terminal)
+- Docker exposed on TCP from WSL2 (see below)
+
+### Docker via WSL2 over TCP
+
+The frontend app and WireMock run in Docker containers inside WSL2. To let
+Gemini CLI (running in PowerShell) interact with them:
+
+#### 1. Expose Docker daemon on TCP in WSL2
+
+In WSL2, edit `/etc/docker/daemon.json`:
+
+```json
+{
+  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+}
+```
+
+Restart Docker in WSL2:
+
+```bash
+sudo systemctl restart docker
+```
+
+#### 2. Set DOCKER_HOST in PowerShell
+
+```powershell
+$env:DOCKER_HOST = "tcp://localhost:2375"
+```
+
+Or persist in your PowerShell profile (`$PROFILE`):
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("DOCKER_HOST", "tcp://localhost:2375", "User")
+```
+
+#### 3. Run WireMock for Frontend Mocking
+
+WireMock provides mock API endpoints so the frontend can run independently of
+the real backend:
+
+```bash
+# In WSL2
+docker run -d --name wiremock \
+  -p 8081:8080 \
+  -v $(pwd)/wiremock/mappings:/home/wiremock/mappings \
+  -v $(pwd)/wiremock/__files:/home/wiremock/__files \
+  wiremock/wiremock:latest
+
+# Verify from PowerShell
+curl http://localhost:8081/__admin/mappings
+```
+
+#### 4. Run Frontend Dev Server in Docker
+
+```bash
+# In WSL2
+docker compose up -d frontend
+# Frontend available at http://localhost:3000 from both WSL2 and Windows
+```
+
+#### 5. Verify Cross-Platform Connectivity
+
+From PowerShell:
+
+```powershell
+# Docker commands work via TCP
+docker ps
+
+# Frontend reachable from Windows (browser agent will use this)
+curl http://localhost:3000
+
+# WireMock reachable from Windows
+curl http://localhost:8081/__admin
+```
 
 ### Validate the Fix
 
@@ -363,8 +469,9 @@ Then create a markdown report of everything we did.
 
 ## Example: Complete Session Transcript
 
-```bash
-$ gemini
+```powershell
+# Launch from PowerShell — NOT from WSL2 terminal
+PS C:\project> gemini
 
 > Read Jira issue FE-789
 # Agent calls mcp_jira_get_issue("FE-789")
@@ -393,15 +500,21 @@ $ gemini
 
 ## Configuration Checklist
 
-| Component | Required | How |
-|:----------|:---------|:----|
-| Jira MCP Server | Yes | `settings.json` → `mcpServers.jira` |
-| Jira API Token | Yes | Environment variable `JIRA_API_TOKEN` |
-| Browser Agent | Yes | `settings.json` → `agents.overrides.browser_agent.enabled: true` |
-| Chrome v144+ | Yes | Install from google.com/chrome |
-| Node.js + npx | Yes | Already required for Gemini CLI |
-| Plan Mode | Recommended | `settings.json` → `experimental.plan: true` |
-| Custom Agents | Optional | `settings.json` → `experimental.enableAgents: true` |
+| Component | Required | Runs On | How |
+|:----------|:---------|:--------|:----|
+| Gemini CLI | Yes | **PowerShell** | `npm i -g @anthropic-ai/gemini-cli` |
+| Jira MCP Server | Yes | **PowerShell** | `settings.json` → `mcpServers.jira` |
+| Jira API Token | Yes | **PowerShell** | Environment variable `JIRA_API_TOKEN` |
+| Browser Agent | Yes | **PowerShell** | `settings.json` → `agents.overrides.browser_agent.enabled: true` |
+| Chrome v144+ | Yes | **Windows** | Install from google.com/chrome (native, not WSL2) |
+| Node.js + npx | Yes | **PowerShell** | Already required for Gemini CLI |
+| Docker Engine | Yes | **WSL2** | Docker Desktop with WSL2 backend |
+| Docker TCP | Yes | **WSL2→Windows** | Expose daemon on `tcp://0.0.0.0:2375` |
+| WireMock | Yes | **Docker/WSL2** | `docker run wiremock/wiremock` on port 8081 |
+| Frontend Dev Server | Yes | **Docker/WSL2** | `docker compose up frontend` on port 3000 |
+| `DOCKER_HOST` env | Yes | **PowerShell** | `$env:DOCKER_HOST = "tcp://localhost:2375"` |
+| Plan Mode | Recommended | **PowerShell** | `settings.json` → `experimental.plan: true` |
+| Custom Agents | Optional | **PowerShell** | `settings.json` → `experimental.enableAgents: true` |
 
 ---
 

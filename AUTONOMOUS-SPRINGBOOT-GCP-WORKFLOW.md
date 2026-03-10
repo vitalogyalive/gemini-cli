@@ -9,29 +9,63 @@ validated production-ready code.
 ## Architecture Overview
 
 ```
-┌──────────────┐  MCP    ┌───────────────┐   MCP    ┌────────────────────┐
-│  Gemini CLI  │◄───────►│  Jira Server  │          │  GCP MCP Server    │
-│  (Orchestr.) │         └───────────────┘   ┌─────►│  (Cloud Run, GKE,  │
-│              │◄────────────────────────────►┘      │   Logging, SQL)    │
-│              │  MCP    ┌───────────────┐           └────────────────────┘
-│              │◄───────►│  PostgreSQL / │
-│              │         │  Cloud SQL    │   ┌────────────────────┐
-│              │  MCP    └───────────────┘   │  Browser Agent     │
-│              │◄───────────────────────────►│  (Swagger UI,      │
-│              │                             │   API validation)   │
-└──────┬───────┘                             └────────────────────┘
-       │
-       │  reads/writes
-       ▼
-┌─────────────────────────────────────┐
-│  Spring Boot Project (local)        │
-│  ├── src/main/java/...              │
-│  ├── src/test/java/...              │
-│  ├── build.gradle / pom.xml         │
-│  ├── application.yml                │
-│  └── docker-compose.yml             │
-└─────────────────────────────────────┘
+┌─── PowerShell (Windows Host) ──────────────────────────────────────────────────┐
+│                                                                                │
+│  ┌──────────────┐  MCP    ┌───────────────┐   MCP    ┌────────────────────┐   │
+│  │  Gemini CLI  │◄───────►│  Jira Server  │          │  GCP MCP Server    │   │
+│  │  (Orchestr.) │         └───────────────┘   ┌─────►│  (Cloud Run, GKE,  │   │
+│  │              │◄────────────────────────────►┘      │   Logging, SQL)    │   │
+│  │              │  MCP    ┌───────────────┐           └────────────────────┘   │
+│  │              │◄───────►│  PostgreSQL   │                                    │
+│  │              │         │  (via proxy)  │   ┌────────────────────┐           │
+│  │              │         └───────────────┘   │  Browser Agent     │           │
+│  │              │◄───────────────────────────►│  (Chrome on Win)   │           │
+│  └──────┬───────┘                             │  → Swagger UI      │           │
+│         │                                     └────────────────────┘           │
+│         │  reads/writes                                                        │
+│         ▼                                                                      │
+│  ┌─────────────────────────────────────┐                                       │
+│  │  Spring Boot Project (local)        │                                       │
+│  │  ├── src/main/java/...              │                                       │
+│  │  ├── src/test/java/...              │                                       │
+│  │  ├── build.gradle / pom.xml         │                                       │
+│  │  ├── application.yml                │                                       │
+│  │  └── docker-compose.yml             │                                       │
+│  └─────────────────────────────────────┘                                       │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ Docker TCP (tcp://localhost:2375)
+                              ▼
+┌─── WSL2 (Linux) ──────────────────────────────────────────────────────────────┐
+│                                                                                │
+│  ┌─────────────────────────────────────────────────┐                           │
+│  │  Docker Engine                                   │                           │
+│  │  ├── WireMock           :8081 (mock APIs)        │                           │
+│  │  ├── PostgreSQL         :5432 (local DB)         │                           │
+│  │  ├── Redis / Kafka      :6379 / :9092 (optional) │                           │
+│  │  └── Spring Boot (alt.) :8080 (containerized)    │                           │
+│  └─────────────────────────────────────────────────┘                           │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Platform Split: PowerShell vs WSL2
+
+| Component | Runs On | Why |
+|:----------|:--------|:----|
+| **Gemini CLI** | PowerShell (Windows) | Browser agent requires native Chrome |
+| **Browser Agent + Chrome** | PowerShell (Windows) | Chrome must run natively — no display server in WSL2 |
+| **Spring Boot (dev)** | PowerShell (Windows) | `./gradlew bootRun` with live reload |
+| **Docker Engine** | WSL2 (Linux) | Docker Desktop uses WSL2 backend |
+| **WireMock** | Docker in WSL2 | Mock backend APIs for integration testing |
+| **PostgreSQL** | Docker in WSL2 | Local database for development |
+| **Redis / Kafka** | Docker in WSL2 | Optional infrastructure services |
+| **gcloud CLI** | PowerShell (Windows) | GCP operations from the host |
+
+> **Key constraint:** The browser agent launches Chrome via `chrome-devtools-mcp`.
+> Chrome cannot run inside WSL2 (no display server). Gemini CLI and the browser
+> agent **must run from PowerShell on Windows**.
 
 ---
 
@@ -709,10 +743,36 @@ commandPrefix = "./mvnw "
 decision = "allow"
 priority = 200
 
-# Docker Compose (for local deps)
+# Docker Compose (runs via TCP to WSL2)
 [[rule]]
 toolName = "run_shell_command"
 commandPrefix = "docker compose "
+decision = "allow"
+priority = 200
+
+# Docker commands (WireMock, PostgreSQL, etc. in WSL2)
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = "docker ps"
+decision = "allow"
+priority = 200
+
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = "docker logs"
+decision = "allow"
+priority = 200
+
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = "docker exec"
+decision = "allow"
+priority = 200
+
+# WireMock admin API
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = "curl http://localhost:8081"
 decision = "allow"
 priority = 200
 
@@ -788,7 +848,14 @@ priority = 999
 ## 7. Browser Agent for API Validation
 
 The browser agent can validate backend APIs through Swagger UI or any web
-interface.
+interface. It **must run from PowerShell on Windows** — Chrome cannot run
+inside WSL2.
+
+### Prerequisites
+
+- Gemini CLI running **from PowerShell** (not WSL2 terminal)
+- Chrome v144+ installed **on Windows**
+- Docker exposed via TCP from WSL2 (for WireMock and dependencies)
 
 ### Enable Browser Agent
 
@@ -804,6 +871,131 @@ interface.
     }
   }
 }
+```
+
+### Docker via WSL2 over TCP
+
+Backend dependencies (WireMock, PostgreSQL, Redis, Kafka) run in Docker inside
+WSL2. To let Gemini CLI control them from PowerShell:
+
+#### 1. Expose Docker daemon on TCP in WSL2
+
+Edit `/etc/docker/daemon.json` in WSL2:
+
+```json
+{
+  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+}
+```
+
+Restart Docker:
+
+```bash
+sudo systemctl restart docker
+```
+
+#### 2. Set DOCKER_HOST in PowerShell
+
+```powershell
+$env:DOCKER_HOST = "tcp://localhost:2375"
+```
+
+Persist in your profile:
+
+```powershell
+# Add to $PROFILE
+[System.Environment]::SetEnvironmentVariable("DOCKER_HOST", "tcp://localhost:2375", "User")
+```
+
+#### 3. Run WireMock for API Mocking
+
+WireMock mocks external APIs or microservices that the Spring Boot app depends
+on — useful for integration testing without real services:
+
+```bash
+# In WSL2
+docker run -d --name wiremock \
+  -p 8081:8080 \
+  -v $(pwd)/wiremock/mappings:/home/wiremock/mappings \
+  -v $(pwd)/wiremock/__files:/home/wiremock/__files \
+  wiremock/wiremock:latest
+```
+
+Example WireMock mapping (`wiremock/mappings/payment-gateway.json`):
+
+```json
+{
+  "request": {
+    "method": "POST",
+    "urlPattern": "/api/v1/payments/charge"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "transactionId": "TXN-MOCK-001",
+      "status": "APPROVED",
+      "amount": 99.99
+    }
+  }
+}
+```
+
+Configure Spring Boot to point to WireMock in `application-local.yml`:
+
+```yaml
+external-services:
+  payment-gateway:
+    base-url: http://localhost:8081/api/v1/payments
+```
+
+#### 4. Run Full Stack with Docker Compose
+
+```yaml
+# docker-compose.yml (runs in WSL2)
+services:
+  postgres:
+    image: postgres:16
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: myapp
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+
+  wiremock:
+    image: wiremock/wiremock:latest
+    ports: ["8081:8080"]
+    volumes:
+      - ./wiremock/mappings:/home/wiremock/mappings
+      - ./wiremock/__files:/home/wiremock/__files
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+```
+
+```bash
+# In WSL2
+docker compose up -d
+
+# Verify from PowerShell
+docker ps                           # via TCP
+curl http://localhost:8081/__admin   # WireMock
+curl http://localhost:5432           # PostgreSQL (will get protocol error = OK)
+```
+
+#### 5. Run Spring Boot on Windows, Deps on WSL2
+
+```powershell
+# PowerShell — Spring Boot connects to Docker services via localhost
+$env:SPRING_PROFILES_ACTIVE = "local"
+./gradlew bootRun
+
+# Services are reachable:
+# - PostgreSQL:  localhost:5432  (Docker/WSL2)
+# - WireMock:    localhost:8081  (Docker/WSL2)
+# - Spring Boot: localhost:8080  (Windows native)
+# - Chrome:      launched by browser agent (Windows native)
 ```
 
 ### Validate via Swagger UI
@@ -986,7 +1178,61 @@ When activated, follow this layered implementation approach:
 
 ## 10. Full settings.json Configuration
 
-Complete autonomous Spring Boot + GCP configuration:
+Complete autonomous Spring Boot + GCP configuration for a **PowerShell + WSL2**
+environment:
+
+### PowerShell Environment Setup
+
+Set these in your PowerShell profile (`$PROFILE`) or session:
+
+```powershell
+# Docker — route to WSL2 engine via TCP
+$env:DOCKER_HOST = "tcp://localhost:2375"
+
+# Spring Boot
+$env:SPRING_PROFILES_ACTIVE = "local"
+
+# Jira
+$env:JIRA_SITE_URL = "https://yourcompany.atlassian.net"
+$env:JIRA_USER_EMAIL = "you@company.com"
+$env:JIRA_API_TOKEN = "your-token"
+
+# GitHub
+$env:GITHUB_TOKEN = "ghp_xxx"
+
+# Database (PostgreSQL in Docker/WSL2, exposed on localhost)
+$env:DATABASE_URL = "postgresql://user:pass@localhost:5432/myapp"
+
+# GCP
+$env:GCP_PROJECT_ID = "my-project-id"
+$env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\to\service-account.json"
+
+# Gemini
+$env:GEMINI_API_KEY = "your-gemini-api-key"
+```
+
+### WSL2 Docker Setup
+
+In WSL2, ensure Docker daemon is exposed on TCP:
+
+```bash
+# /etc/docker/daemon.json
+{
+  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+}
+
+# Restart
+sudo systemctl restart docker
+```
+
+Start infrastructure:
+
+```bash
+# In WSL2
+docker compose up -d   # postgres, wiremock, redis, etc.
+```
+
+### `~/.gemini/settings.json`
 
 ```json
 {
@@ -1049,6 +1295,25 @@ Complete autonomous Spring Boot + GCP configuration:
 }
 ```
 
+### Startup Checklist (PowerShell)
+
+```powershell
+# 1. Start Docker deps in WSL2 (from PowerShell via TCP)
+docker compose up -d
+
+# 2. Verify services
+docker ps                                    # WireMock, Postgres, Redis running
+curl http://localhost:8081/__admin            # WireMock accessible
+curl http://localhost:8080/actuator/health    # (after bootRun)
+
+# 3. Launch Gemini CLI from PowerShell
+gemini --approval-mode auto_edit
+
+# 4. Verify MCP connections
+> /mcp
+# Should show: jira (CONNECTED), github (CONNECTED), postgres (CONNECTED)
+```
+
 ---
 
 ## 11. Non-Interactive CI/CD Pipeline
@@ -1103,9 +1368,15 @@ gemini -p "
 
 ## 12. Example Sessions
 
+> **All sessions below run from PowerShell on Windows.** Docker deps
+> (WireMock, PostgreSQL) are running in WSL2 and reachable on `localhost`
+> via TCP.
+
 ### Session 1: Fix a NullPointerException
 
-```
+```powershell
+PS C:\project> gemini --approval-mode auto_edit
+
 > Read Jira issue BACKEND-101
 
 Agent calls mcp_jira_get_issue("BACKEND-101"):
@@ -1204,9 +1475,11 @@ Agent creates PR and updates Jira
 | Run specific test | `Run ./gradlew test --tests "ClassName"` |
 | Start app | `Run ./gradlew bootRun` |
 | Validate via curl | `curl -X GET http://localhost:8080/api/endpoint` |
-| Validate via browser | `Use browser agent to test via Swagger UI` |
+| Validate via browser | `Use browser agent to test via Swagger UI` (PowerShell only) |
 | Check DB | `Query the payments table for user 123` |
+| Start Docker deps | `docker compose up -d` (via TCP to WSL2) |
+| Check WireMock | `curl http://localhost:8081/__admin/mappings` |
 | Commit | `Commit with conventional message fix(PROJ-123): desc` |
 | Create PR | `Create a PR targeting main` |
 | Update Jira | `Transition PROJ-123 to "In Review"` |
-| Full autonomous | `gemini --yolo -p "Fix PROJ-123 end to end"` |
+| Full autonomous | `gemini --yolo -p "Fix PROJ-123 end to end"` (from PowerShell) |
